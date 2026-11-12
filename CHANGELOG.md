@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- CI: the end-to-end test runs on Odoo 16 and 20 (matrix). The required `e2e` check now aggregates both versions.
 - CI: pin the runners to `ubuntu-24.04` instead of `ubuntu-latest`, so the upcoming switch of `ubuntu-latest` to Ubuntu 26 cannot break the build unannounced.
 
 ## [1.0.0] - 2026-11-12
