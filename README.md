@@ -7,7 +7,7 @@
 
 [Version française](README.fr.md)
 
-![odoomv up, init, test and status on Odoo 16](docs/demo.gif)
+![odoomv up, status, link, psql, unlink and down on Odoo 19](docs/demo.gif)
 
 ## The problem
 
