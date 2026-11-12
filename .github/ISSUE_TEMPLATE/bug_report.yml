@@ -1,0 +1,57 @@
+name: Bug report
+description: Something does not work as described
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Security issues must be reported privately (see SECURITY.md).
+  - type: dropdown
+    id: odoo-version
+    attributes:
+      label: Odoo version(s)
+      multiple: true
+      options: ["16", "17", "18", "19", "20"]
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: The exact odoomv command you ran.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: The full output, or at least the last 50 lines. Remove anything private.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: e.g. Ubuntu 24.04, macOS 15 with Docker Desktop, Windows 11 with WSL2
+    validations:
+      required: true
+  - type: input
+    id: docker
+    attributes:
+      label: Docker version
+      description: Output of `docker version --format '{{.Server.Version}}'` and `docker compose version`
+    validations:
+      required: true
+  - type: input
+    id: lab-version
+    attributes:
+      label: odoo-multiverse version
+      description: Output of `git describe --tags --always`
