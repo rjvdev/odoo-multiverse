@@ -1,0 +1,15 @@
+# Odoo source copied from the images (1.2 to 1.6 GB per version)
+src/
+# Local configuration and secrets
+.env
+*.env
+docker-compose.override.yml
+.claude/
+# Logs
+logs/
+*.log
+# Python
+__pycache__/
+*.pyc
+# Linked modules (see `odoomv link`)
+addons/*/.links
