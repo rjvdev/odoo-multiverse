@@ -49,7 +49,7 @@ skills/odoo-lab/   Claude Code skill to use the lab from another project
 | `./odoomv logs <v> [-f]` | Last 200 lines of the odoo<v> service, `-f` to follow |
 | `./odoomv src <v>... [--force]` | Copies the `odoo` package of the `odoo:<v>.0` image into `src/<v>/odoo` (`docker cp`) |
 | `./odoomv trace <v> <args...>` | Runs `odoo_trace.py` (agent-skills:odoo-workflow, most recent version in the plugin cache) on `src/<v>` + `addons/<v>`. Example: `./odoomv trace 16 field sale.order commitment_date`. Requires `odoomv src <v>`. Helper exit code: 0 FOUND, 1 NOT FOUND, 2 error. Does not need Docker. |
-| `./odoomv status` | Containers, existing databases, ports |
+| `./odoomv status` | Compact table of containers (service, status with health, ports), existing databases, port map |
 
 `init`, `install`, `update`, `test` and `shell` run in a disposable container (`docker compose --profile <v> run --rm odoo<v> … --stop-after-init --no-http`). The running web instance is never touched.
 
