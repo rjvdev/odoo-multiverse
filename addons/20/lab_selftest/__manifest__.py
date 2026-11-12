@@ -1,0 +1,10 @@
+{
+    "name": "Lab Selftest",
+    "version": "20.0.1.0.0",
+    "summary": "Minimal module to check the lab (install + tests)",
+    "category": "Hidden",
+    "depends": ["base"],
+    "data": ["security/ir.access.csv"],
+    "license": "Other OSI approved licence",
+    "installable": True,
+}

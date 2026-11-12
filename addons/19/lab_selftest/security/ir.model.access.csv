@@ -1,0 +1,2 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_lab_selftest_user,lab.selftest user,model_lab_selftest,base.group_user,1,1,1,1
