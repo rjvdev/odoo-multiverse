@@ -428,7 +428,8 @@ cmd_trace() {
 }
 
 cmd_status() {
-  dc --profile '*' ps --all
+  # Compact table (fits an ~80-column terminal): service, state with health, ports.
+  dc --profile '*' ps --all --format 'table {{.Service}}\t{{.Status}}\t{{.Ports}}'
   echo
   echo "Databases:"
   dc exec -T db psql -U odoo -d postgres -tAc \

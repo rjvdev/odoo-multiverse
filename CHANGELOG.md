@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `odoomv status` shows a compact table (service, status, ports) that fits an 80-column terminal.
 - `odoomv test` writes its log to `logs/test-<v>-<module>-<timestamp>.log` instead of a temporary file, drops the scratch database before printing the verdict, and keeps the verdict (with the log path) on the last line.
 - Compose progress output is hidden when odoomv starts Postgres or a one-off container implicitly; errors are still printed.
 - Messages show paths under `$HOME` as `~/…`.
