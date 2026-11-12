@@ -27,6 +27,7 @@ skills/odoo-lab/   Claude Code skill to use the lab from another project
 - Odoo credentials: `admin` / `admin`. Postgres: `odoo` / `odoo`. The Postgres port is not exposed: use `odoomv psql`.
 - Each instance has `--db-filter=^(odoo<v>|scratch<v>_.*)$` and its own filestore (volume `odoo<v>-data`).
 - Each Odoo service has a healthcheck on `/web/health`: `odoomv status` shows `(healthy)` once Odoo answers.
+- Messages show paths under `$HOME` as `~/…`. When odoomv starts Postgres or a one-off container implicitly, Compose progress output is hidden (errors are still printed).
 
 ## Commands
 
@@ -79,9 +80,10 @@ Odoo changed its default behavior in version 19. The script makes it consistent:
 1. Drops `scratch<v>_<module>` if it exists.
 2. Installs the module with `--test-enable --test-tags /<module> --log-level=test`.
 3. Fails (exit code ≠ 0) in three cases: no `N failed, M error(s) of K tests` line with K > 0; a non-zero `failed` or `error(s)` value; a non-zero Odoo exit code.
-4. Always drops the database and its filestore (`trap EXIT`), even on failure. The path of the full log is printed at the end.
+4. Always drops the database and its filestore, even on failure or interruption (`trap EXIT`).
+5. Writes the full Odoo log to `logs/test-<v>-<module>-<timestamp>.log` (`logs/` is ignored by Git).
 
-The last line is the verdict: `OK: N tests, 0 failed, 0 error(s)` or `FAIL: …`.
+The last line is the verdict, with the path of the log: `OK: N tests, 0 failed, 0 error(s) (log: logs/…)` or `FAIL: <reasons> (log: logs/…)`.
 
 ### `odoomv trace` sentinels
 

@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `odoomv test` writes its log to `logs/test-<v>-<module>-<timestamp>.log` instead of a temporary file, drops the scratch database before printing the verdict, and keeps the verdict (with the log path) on the last line.
+- Compose progress output is hidden when odoomv starts Postgres or a one-off container implicitly; errors are still printed.
+- Messages show paths under `$HOME` as `~/…`.
 - CI: the end-to-end test runs on Odoo 16 and 20 (matrix). The required `e2e` check now aggregates both versions.
 - CI: pin the runners to `ubuntu-24.04` instead of `ubuntu-latest`, so the upcoming switch of `ubuntu-latest` to Ubuntu 26 cannot break the build unannounced.
 
