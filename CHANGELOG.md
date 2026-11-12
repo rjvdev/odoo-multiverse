@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Demo GIF in both READMEs, recorded with [vhs](https://github.com/charmbracelet/vhs) from `docs/demo.tape`.
 - Dependabot keeps the GitHub Actions used by the CI up to date (weekly).
 
 ### Changed
