@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Run shellcheck
+        run: shellcheck --version && shellcheck odoomv
+
+  e2e:
+    name: e2e
+    needs: shellcheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Start Odoo 16
+        run: ./odoomv up 16
+
+      - name: Create the odoo16 database
+        run: ./odoomv init 16
+
+      - name: Wait for /web/health (up to 120 s)
+        run: |
+          for i in $(seq 1 24); do
+            if curl -fsS http://127.0.0.1:8016/web/health; then
+              echo; echo "healthy after $(( (i - 1) * 5 )) s"; exit 0
+            fi
+            sleep 5
+          done
+          echo "Odoo 16 did not answer on /web/health within 120 s" >&2
+          exit 1
+
+      - name: Test lab_selftest
+        run: ./odoomv test 16 lab_selftest
+
+      - name: Status
+        if: always()
+        run: ./odoomv status
+
+      - name: Odoo logs on failure
+        if: failure()
+        run: ./odoomv logs 16
+
+      - name: Stop the lab
+        if: always()
+        run: ./odoomv down
