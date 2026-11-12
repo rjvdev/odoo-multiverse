@@ -23,33 +23,39 @@ jobs:
       - name: Run shellcheck
         run: shellcheck --version && shellcheck odoomv
 
-  e2e:
-    name: e2e
+  e2e-run:
+    name: e2e (${{ matrix.odoo }})
     needs: shellcheck
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        odoo: ["16", "20"]
+    env:
+      V: ${{ matrix.odoo }}
     steps:
       - uses: actions/checkout@v7
 
-      - name: Start Odoo 16
-        run: ./odoomv up 16
+      - name: Start Odoo ${{ matrix.odoo }}
+        run: ./odoomv up "$V"
 
-      - name: Create the odoo16 database
-        run: ./odoomv init 16
+      - name: Create the odoo${{ matrix.odoo }} database
+        run: ./odoomv init "$V"
 
       - name: Wait for /web/health (up to 120 s)
         run: |
           for i in $(seq 1 24); do
-            if curl -fsS http://127.0.0.1:8016/web/health; then
+            if curl -fsS "http://127.0.0.1:80$V/web/health"; then
               echo; echo "healthy after $(( (i - 1) * 5 )) s"; exit 0
             fi
             sleep 5
           done
-          echo "Odoo 16 did not answer on /web/health within 120 s" >&2
+          echo "Odoo $V did not answer on /web/health within 120 s" >&2
           exit 1
 
       - name: Test lab_selftest
-        run: ./odoomv test 16 lab_selftest
+        run: ./odoomv test "$V" lab_selftest
 
       - name: Status
         if: always()
@@ -57,8 +63,23 @@ jobs:
 
       - name: Odoo logs on failure
         if: failure()
-        run: ./odoomv logs 16
+        run: ./odoomv logs "$V"
 
       - name: Stop the lab
         if: always()
         run: ./odoomv down
+
+  # Required check for branch protection: the matrix reports "e2e (16)" and "e2e (20)",
+  # this job reports "e2e" and fails unless every matrix leg succeeded.
+  e2e:
+    name: e2e
+    needs: e2e-run
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check the e2e matrix result
+        env:
+          RESULT: ${{ needs.e2e-run.result }}
+        run: |
+          echo "e2e matrix result: $RESULT"
+          test "$RESULT" = success

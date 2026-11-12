@@ -27,7 +27,7 @@ cd ~/odoo-multiverse
 4. Update `CLAUDE.md` and the README (both `README.md` and `README.fr.md`) when you change a command or its behavior. Agents rely on `CLAUDE.md`.
 5. Add a line under `[Unreleased]` in `CHANGELOG.md`.
 
-The CI runs shellcheck and an end-to-end test (`up 16`, `init 16`, health check, `test 16 lab_selftest`) on every pull request.
+The CI runs shellcheck and an end-to-end test on Odoo 16 and 20 (`up`, `init`, health check, `test lab_selftest`) on every pull request.
 
 ## Guidelines
 
