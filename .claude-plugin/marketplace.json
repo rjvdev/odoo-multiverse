@@ -1,0 +1,14 @@
+{
+  "name": "odoo-multiverse",
+  "owner": {
+    "name": "rjvdev",
+    "url": "https://github.com/rjvdev"
+  },
+  "plugins": [
+    {
+      "name": "odoo-multiverse",
+      "source": "./",
+      "description": "Skill to drive a local multi-version Odoo lab (16 to 20)."
+    }
+  ]
+}

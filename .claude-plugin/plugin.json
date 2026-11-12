@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json.schemastore.org/claude-plugin.json",
+  "name": "odoo-multiverse",
+  "version": "1.0.0",
+  "description": "Skill to drive a local multi-version Odoo lab (16 to 20): module tests in disposable databases, shell, psql, source reading and tracing.",
+  "author": {
+    "name": "rjvdev",
+    "url": "https://github.com/rjvdev"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/rjvdev/odoo-multiverse",
+  "repository": "https://github.com/rjvdev/odoo-multiverse",
+  "keywords": ["odoo", "docker", "testing", "odoo-development", "agent-skills"]
+}
