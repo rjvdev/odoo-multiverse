@@ -7,6 +7,8 @@
 
 [English version](README.md)
 
+![odoomv up, init, test et status sur Odoo 16](docs/demo.gif)
+
 ## Le problème
 
 Quand on maintient des modules Odoo, on travaille rarement sur une seule version. Un client est en 16, un autre passe en 18, et les versions 19 et 20 modifient des API sur lesquelles on comptait. Garder une installation `odoo-bin` par version oblige à jongler entre virtualenvs, versions de Python et bibliothèques système. Les bases de test s'accumulent. Vérifier qu'une méthode existe encore en 19 devient un jeu de devinettes, et les agents IA comblent les trous en devinant.
