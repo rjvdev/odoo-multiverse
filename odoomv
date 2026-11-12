@@ -1,0 +1,455 @@
+#!/usr/bin/env bash
+# odoomv: control script for the multi-version Odoo lab (16 to 20). See CLAUDE.md.
+set -euo pipefail
+
+LAB_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+cd "$LAB_DIR"
+
+die() { echo "odoomv: $*" >&2; exit 1; }
+info() { echo ">> $*" >&2; }
+
+usage() {
+  cat <<'EOF'
+Usage: odoomv <command> [arguments]
+
+  up <v>...                    start db + odoo<v> (http://127.0.0.1:80<v>)
+  down [<v>...]                stop odoo<v>, or the whole lab with no argument (volumes kept)
+  restart <v>...               restart odoo<v> if it is running
+  init <v> [--demo|--no-demo]  create the odoo<v> database (base installed, demo data by default)
+  install <v> <mods> [db]      install modules (comma-separated)
+  update <v> <mods> [db]       update modules
+  test <v> <module>            test a module in scratch<v>_<module>, dropped afterwards
+  link <v> <path>              copy (rsync) a module from another project into addons/<v>/<module>
+  unlink <v> <module>          remove the copy of a linked module
+  shell <v> [db]               odoo shell (accepts a script on stdin)
+  psql <v> [db]                psql on the database (odoo<v> by default)
+  logs <v> [-f]                logs of the odoo<v> service
+  src <v>... [--force]         copy the Odoo source code from the image into src/<v>/odoo
+  trace <v> <args...>          odoo_trace.py (agent-skills) on src/<v> + addons/<v>
+                               e.g. odoomv trace 16 field sale.order commitment_date
+  status                       containers, databases and ports
+
+<v>: 16, 17, 18, 19 or 20 (16.0 is accepted).
+EOF
+}
+
+# --- helpers -----------------------------------------------------------------
+
+parse_version() {
+  local v="${1:-}"
+  v="${v%.0}"
+  [[ "$v" =~ ^(16|17|18|19|20)$ ]] || die "invalid version: '${1:-}' (expected 16 to 20)"
+  echo "$v"
+}
+
+# Validates every argument before anything runs, drops duplicates, prints one version per line.
+parse_versions() {
+  [[ $# -gt 0 ]] || die "missing version (16 to 20)"
+  local a v seen=" "
+  for a in "$@"; do
+    # Runs inside $(...), where set -e is not inherited: stop explicitly.
+    v="$(parse_version "$a")" || exit 1
+    [[ "$seen" == *" $v "* ]] && continue
+    seen+="$v "
+    echo "$v"
+  done
+}
+
+tty_flag() { [[ -t 0 && -t 1 ]] || echo "-T"; }
+
+dc() { docker compose "$@"; }
+
+ensure_db() { dc up -d --wait db >/dev/null; }
+
+db_exists() {
+  [[ "$(dc exec -T db psql -U odoo -d postgres -tAc \
+      "select 1 from pg_database where datname = '$1'")" == "1" ]]
+}
+
+# One-off odoo command in a disposable container: the running web instance is not touched.
+odoo_run() {
+  local v="$1"; shift
+  dc --profile "$v" run --rm -T "odoo$v" odoo "$@"
+}
+
+# Demo data: loaded by default in 16-18, opt-in (--with-demo) from 19 on.
+demo_args() {
+  local v="$1" want="$2"
+  if (( v >= 19 )); then
+    [[ "$want" == yes ]] && echo "--with-demo"
+  else
+    [[ "$want" == no ]] && echo "--without-demo=all"
+  fi
+  return 0
+}
+
+check_db_allowed() {
+  local v="$1" db="$2"
+  [[ "$db" == "odoo$v" || "$db" =~ ^scratch${v}_[a-z0-9_]+$ ]] \
+    || die "database '$db' refused: only odoo$v and scratch${v}_* are allowed"
+}
+
+check_mods() {
+  [[ "$1" =~ ^[a-z0-9_]+(,[a-z0-9_]+)*$ ]] || die "invalid module list: '$1'"
+}
+
+is_running() { [[ -n "$(dc --profile "$1" ps -q --status running "odoo$1")" ]]; }
+
+# --- linked modules (rsync copies of modules from other projects) --------------
+# addons/<v>/.links: one "<module><TAB><absolute source path>" line per linked module.
+# addons/<v>/.gitignore: "/<module>/" for each linked module (code from another project).
+
+links_file() { echo "$LAB_DIR/addons/$1/.links"; }
+
+link_source() {
+  local v="$1" module="$2" f; f="$(links_file "$v")"
+  [[ -f "$f" ]] || return 1
+  awk -F'\t' -v m="$module" '$1 == m { print $2; found = 1 } END { exit !found }' "$f"
+}
+
+# Removes the exact line $2 from file $1 (if it exists).
+remove_line() {
+  local f="$1" line="$2"
+  [[ -f "$f" ]] || return 0
+  grep -vxF -- "$line" "$f" > "$f.tmp" || true
+  mv "$f.tmp" "$f"
+  [[ -s "$f" ]] || rm -f "$f"
+}
+
+# Destination path, checked to be exactly addons/<v>/<module>.
+link_dest() {
+  local v="$1" module="$2"
+  [[ "$module" =~ ^[a-z0-9_]+$ ]] || die "invalid module name: '$module'"
+  local base; base="$(readlink -f "$LAB_DIR/addons/$v")"
+  local dest="$base/$module"
+  [[ "$(dirname "$dest")" == "$base" && "$(basename "$dest")" == "$module" ]] \
+    || die "destination outside addons/$v: '$dest'"
+  [[ ! -L "$dest" ]] || die "$dest is a symbolic link, refused"
+  echo "$dest"
+}
+
+rsync_module() {
+  local src="$1" dest="$2"
+  [[ -f "$src/__manifest__.py" ]] || die "$src has no __manifest__.py"
+  rsync -a --delete --exclude '__pycache__/' --exclude '*.pyc' --exclude '.git/' \
+    "$src/" "$dest/"
+}
+
+# Resyncs the linked modules found in an "a,b,c" list (the others are ignored).
+sync_links() {
+  local v="$1" mods="$2" m src
+  IFS=',' read -ra list <<< "$mods"
+  for m in "${list[@]}"; do
+    if src="$(link_source "$v" "$m")"; then
+      info "resyncing $m from $src"
+      rsync_module "$src" "$(link_dest "$v" "$m")"
+    fi
+  done
+}
+
+cmd_link() {
+  local v; v="$(parse_version "${1:-}")"
+  [[ -n "${2:-}" ]] || die "link: missing module path"
+  [[ -d "$2" ]] || die "link: '$2' is not a directory"
+  local src; src="$(readlink -f "$2")"
+  [[ -f "$src/__manifest__.py" ]] || die "link: $src has no __manifest__.py"
+  local module; module="$(basename "$src")"
+  local dest; dest="$(link_dest "$v" "$module")"
+  local base; base="$(dirname "$dest")"
+  [[ "$src" != "$base"/* ]] || die "link: the source is already inside addons/$v"
+
+  local old
+  if old="$(link_source "$v" "$module")"; then
+    [[ "$old" == "$src" ]] || info "$module was linked to $old, replaced by $src"
+    remove_line "$(links_file "$v")" "$module"$'\t'"$old"
+  elif [[ -e "$dest" ]]; then
+    die "link: addons/$v/$module already exists and is not a linked module (refusing to overwrite)"
+  fi
+
+  mkdir -p "$dest"
+  rsync_module "$src" "$dest"
+  printf '%s\t%s\n' "$module" "$src" >> "$(links_file "$v")"
+  local gi="$base/.gitignore"
+  grep -qxF "/$module/" "$gi" 2>/dev/null || echo "/$module/" >> "$gi"
+  info "$module linked: $src -> addons/$v/$module"
+  info "next step: odoomv install $v $module (or odoomv test $v $module)"
+}
+
+cmd_unlink() {
+  local v; v="$(parse_version "${1:-}")"
+  local module="${2:-}"
+  local dest; dest="$(link_dest "$v" "$module")"
+  local src; src="$(link_source "$v" "$module")" \
+    || die "unlink: $module is not a linked module in $v (see addons/$v/.links)"
+  rm -rf -- "$dest"
+  remove_line "$(links_file "$v")" "$module"$'\t'"$src"
+  remove_line "$(dirname "$dest")/.gitignore" "/$module/"
+  info "$module unlinked (copy removed; the source $src is untouched)"
+  info "the module stays installed in the databases where it was"
+}
+
+restart_if_running() {
+  local v="$1"
+  if is_running "$v"; then
+    info "restarting odoo$v (registry and assets)"
+    dc --profile "$v" restart "odoo$v" >/dev/null
+  fi
+}
+
+# --- commands -----------------------------------------------------------------
+
+cmd_up() {
+  local out; out="$(parse_versions "$@")"
+  local v versions; mapfile -t versions <<< "$out"
+  for v in "${versions[@]}"; do
+    mkdir -p "addons/$v"
+    dc --profile "$v" up -d
+    info "Odoo $v: http://127.0.0.1:80$v"
+  done
+}
+
+cmd_down() {
+  if [[ $# -eq 0 ]]; then
+    dc --profile '*' down
+    return
+  fi
+  local out; out="$(parse_versions "$@")"
+  local v versions; mapfile -t versions <<< "$out"
+  for v in "${versions[@]}"; do
+    dc --profile "$v" rm -sf "odoo$v"
+  done
+}
+
+cmd_restart() {
+  local out; out="$(parse_versions "$@")"
+  local v versions; mapfile -t versions <<< "$out"
+  for v in "${versions[@]}"; do
+    if is_running "$v"; then
+      info "restarting odoo$v"
+      dc --profile "$v" restart "odoo$v" >/dev/null
+    else
+      info "odoo$v is not running, skipped"
+    fi
+  done
+}
+
+cmd_init() {
+  local v; v="$(parse_version "${1:-}")"; shift || true
+  local demo=yes
+  for a in "$@"; do
+    case "$a" in
+      --demo) demo=yes ;;
+      --no-demo) demo=no ;;
+      *) die "init: unknown option '$a'" ;;
+    esac
+  done
+  local db="odoo$v"
+  ensure_db
+  db_exists "$db" && die "database $db already exists (drop it first to start from scratch)"
+  local extra; extra="$(demo_args "$v" "$demo")"
+  info "creating $db (demo data: $demo)"
+  # shellcheck disable=SC2086
+  odoo_run "$v" -d "$db" -i base $extra --stop-after-init --no-http
+  # A running web server may have loaded a half-installed registry while base was being
+  # installed (e.g. a healthcheck request): it keeps answering 500 until restarted.
+  restart_if_running "$v"
+  info "database $db ready (admin / admin)"
+}
+
+cmd_install_update() {
+  local flag="$1"; shift
+  local v; v="$(parse_version "${1:-}")"
+  local mods="${2:-}" db="${3:-odoo${v}}"
+  [[ -n "$mods" ]] || die "missing module(s)"
+  check_mods "$mods"
+  check_db_allowed "$v" "$db"
+  ensure_db
+  db_exists "$db" || die "database $db does not exist (odoomv init $v?)"
+  sync_links "$v" "$mods"
+  odoo_run "$v" -d "$db" "$flag" "$mods" --stop-after-init --no-http
+  restart_if_running "$v"
+}
+
+# Called by the EXIT trap of cmd_test: receives its values as arguments, because the
+# local variables of cmd_test no longer exist when the trap fires.
+cleanup_test() {
+  local v="$1" db="$2" log="$3"
+  if [[ ! "$db" =~ ^scratch${v}_[a-z0-9_]+$ ]]; then
+    echo "odoomv: cleanup_test refuses to drop '$db' (not a scratch${v}_* database)" >&2
+    return 1
+  fi
+  info "dropping $db"
+  dc exec -T db dropdb -U odoo --if-exists --force "$db" || true
+  dc --profile "$v" run --rm -T --no-deps --entrypoint rm "odoo$v" \
+    -rf "/var/lib/odoo/filestore/$db" || true
+  info "full log: $log"
+}
+
+cmd_test() {
+  local v; v="$(parse_version "${1:-}")"
+  local module="${2:-}"
+  [[ "$module" =~ ^[a-z0-9_]+$ ]] || die "test: invalid module name: '$module'"
+  local db="scratch${v}_${module}"
+  local log; log="$(mktemp -t "odoomv-test-${db}.XXXXXX.log")"
+
+  sync_links "$v" "$module"
+  ensure_db
+
+  # Immediate expansion on purpose (SC2064): the locals will be gone on exit.
+  # printf %q protects the values against spaces and quotes.
+  # shellcheck disable=SC2064
+  trap "cleanup_test $(printf '%q ' "$v" "$db" "$log")" EXIT
+
+  dc exec -T db dropdb -U odoo --if-exists --force "$db"
+
+  local extra; extra="$(demo_args "$v" yes)"
+  local rc=0
+  # shellcheck disable=SC2086
+  odoo_run "$v" -d "$db" -i "$module" $extra --test-enable --test-tags "/$module" \
+    --log-level=test --stop-after-init --no-http 2>&1 | tee "$log" || rc=$?
+
+  # Result line printed by Odoo: "N failed, M error(s) of K tests"
+  local total=0 failed=0 errors=0 line
+  while IFS= read -r line; do
+    if [[ "$line" =~ ([0-9]+)\ failed,\ ([0-9]+)\ error\(s\)\ of\ ([0-9]+)\ tests ]]; then
+      failed=$(( failed + BASH_REMATCH[1] ))
+      errors=$(( errors + BASH_REMATCH[2] ))
+      total=$(( total + BASH_REMATCH[3] ))
+    fi
+  done < "$log"
+
+  local verdict=ok
+  if (( total == 0 )); then
+    echo "FAIL: no test ran (no 'N tests' line with N > 0)" >&2; verdict=ko
+  fi
+  if (( failed > 0 || errors > 0 )); then
+    echo "FAIL: $failed failed, $errors error(s) of $total tests" >&2; verdict=ko
+  fi
+  if (( rc != 0 )); then
+    echo "FAIL: Odoo exited with code $rc" >&2; verdict=ko
+  fi
+  if [[ "$verdict" == ok ]]; then
+    echo "OK: $total tests, 0 failed, 0 error(s)" >&2
+    return 0
+  fi
+  return 1
+}
+
+cmd_shell() {
+  local v; v="$(parse_version "${1:-}")"
+  local db="${2:-odoo${v}}"
+  local t; t="$(tty_flag)"
+  # shellcheck disable=SC2086
+  dc --profile "$v" run --rm $t "odoo$v" odoo shell -d "$db" --no-http
+}
+
+cmd_psql() {
+  local v; v="$(parse_version "${1:-}")"
+  local db="${2:-odoo${v}}"
+  local t; t="$(tty_flag)"
+  ensure_db
+  # shellcheck disable=SC2086
+  dc exec $t db psql -U odoo "$db"
+}
+
+cmd_logs() {
+  local v; v="$(parse_version "${1:-}")"
+  local follow=()
+  [[ "${2:-}" == "-f" ]] && follow=(-f)
+  dc --profile "$v" logs --tail 200 "${follow[@]}" "odoo$v"
+}
+
+copy_src() {
+  local v="$1" force="$2"
+  local dest="src/$v"
+  if [[ -d "$dest/odoo" ]]; then
+    [[ "$force" == yes ]] || { info "$dest/odoo already exists (--force to copy again)"; return 0; }
+    rm -rf "${dest:?}/odoo"
+  fi
+  mkdir -p "$dest"
+  local image="odoo:$v.0"
+  local path
+  path="$(docker run --rm --entrypoint python3 "$image" -c \
+    'import odoo; print(list(odoo.__path__)[0])')"
+  info "copying $image:$path to $dest/odoo"
+  local cid; cid="$(docker create "$image")"
+  local rc=0
+  docker cp "$cid:$path" "$dest/odoo" || rc=$?
+  # -v: also removes the anonymous volumes created by the image's VOLUME entries.
+  docker rm -v "$cid" >/dev/null || true
+  (( rc == 0 )) || die "docker cp failed (code $rc)"
+  info "Odoo $v source code in $dest/odoo"
+}
+
+cmd_src() {
+  local force=no args=() a
+  for a in "$@"; do
+    if [[ "$a" == "--force" ]]; then force=yes; else args+=("$a"); fi
+  done
+  local out; out="$(parse_versions "${args[@]}")"
+  local v versions; mapfile -t versions <<< "$out"
+  for v in "${versions[@]}"; do
+    copy_src "$v" "$force"
+  done
+}
+
+# Most recent odoo_trace.py (agent-skills:odoo-workflow) in the plugin cache.
+find_trace() {
+  local cache="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache"
+  find "$cache" -type f -path '*/skills/odoo-workflow/scripts/odoo_trace.py' 2>/dev/null \
+    | sort -V | tail -n 1
+}
+
+cmd_trace() {
+  local v; v="$(parse_version "${1:-}")"; shift || true
+  [[ $# -gt 0 ]] || die "trace: missing helper arguments (e.g. odoomv trace $v field sale.order commitment_date)"
+  local root="$LAB_DIR/src/$v"
+  [[ -f "$root/odoo/release.py" ]] \
+    || die "trace: $root/odoo is missing; run first: odoomv src $v"
+  local helper; helper="$(find_trace)"
+  [[ -n "$helper" ]] \
+    || die "trace: odoo_trace.py not found in ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache (is the agent-skills plugin installed?)"
+  # Explicit --version: otherwise an odoo_version declared in a .claude/odoo.json would
+  # contradict odoo/release.py of the other versions and the helper would stop with SETUP ERROR.
+  exec python3 -I "$helper" --odoo-root "$root" \
+    --addons "$root/odoo/addons,$LAB_DIR/addons/$v" --version "$v.0" "$@"
+}
+
+cmd_status() {
+  dc --profile '*' ps --all
+  echo
+  echo "Databases:"
+  dc exec -T db psql -U odoo -d postgres -tAc \
+    "select datname from pg_database where not datistemplate and datname <> 'postgres' order by 1" \
+    2>/dev/null | sed 's/^/  /' || echo "  (db is stopped)"
+  echo
+  echo "Ports: 16→8016  17→8017  18→8018  19→8019  20→8020 (127.0.0.1)"
+}
+
+# --- dispatch -----------------------------------------------------------------
+
+cmd="${1:-help}"; shift || true
+
+case "$cmd" in
+  trace|help|-h|--help) ;;
+  *) command -v docker >/dev/null || die "docker not found" ;;
+esac
+case "$cmd" in
+  up) cmd_up "$@" ;;
+  down) cmd_down "$@" ;;
+  restart) cmd_restart "$@" ;;
+  init) cmd_init "$@" ;;
+  install) cmd_install_update -i "$@" ;;
+  update) cmd_install_update -u "$@" ;;
+  test) cmd_test "$@" ;;
+  link) cmd_link "$@" ;;
+  unlink) cmd_unlink "$@" ;;
+  shell) cmd_shell "$@" ;;
+  psql) cmd_psql "$@" ;;
+  logs) cmd_logs "$@" ;;
+  src) cmd_src "$@" ;;
+  trace) cmd_trace "$@" ;;
+  status) cmd_status ;;
+  help|-h|--help) usage ;;
+  *) usage >&2; die "unknown command: '$cmd'" ;;
+esac
