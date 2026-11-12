@@ -58,8 +58,19 @@ parse_versions() {
 tty_flag() { [[ -t 0 && -t 1 ]] || echo "-T"; }
 
 dc() { docker compose "$@"; }
+# Same, without progress output: for the Postgres and one-off containers odoomv starts
+# implicitly. Errors are still printed.
+dcq() { docker compose --progress quiet "$@"; }
 
-ensure_db() { dc up -d --wait db >/dev/null; }
+ensure_db() { dcq up -d --wait db >/dev/null; }
+
+# Paths under $HOME are shown as ~/... in messages.
+tildify() {
+  local p="$1"
+  # shellcheck disable=SC2088 # a literal ~ is intended: this is for display only
+  [[ -n "${HOME:-}" && "$p" == "$HOME"/* ]] && p="~/${p#"$HOME"/}"
+  echo "$p"
+}
 
 db_exists() {
   [[ "$(dc exec -T db psql -U odoo -d postgres -tAc \
@@ -69,7 +80,7 @@ db_exists() {
 # One-off odoo command in a disposable container: the running web instance is not touched.
 odoo_run() {
   local v="$1"; shift
-  dc --profile "$v" run --rm -T "odoo$v" odoo "$@"
+  dcq --profile "$v" run --rm -T "odoo$v" odoo "$@"
 }
 
 # Demo data: loaded by default in 16-18, opt-in (--with-demo) from 19 on.
@@ -123,14 +134,14 @@ link_dest() {
   local base; base="$(readlink -f "$LAB_DIR/addons/$v")"
   local dest="$base/$module"
   [[ "$(dirname "$dest")" == "$base" && "$(basename "$dest")" == "$module" ]] \
-    || die "destination outside addons/$v: '$dest'"
-  [[ ! -L "$dest" ]] || die "$dest is a symbolic link, refused"
+    || die "destination outside addons/$v: '$(tildify "$dest")'"
+  [[ ! -L "$dest" ]] || die "$(tildify "$dest") is a symbolic link, refused"
   echo "$dest"
 }
 
 rsync_module() {
   local src="$1" dest="$2"
-  [[ -f "$src/__manifest__.py" ]] || die "$src has no __manifest__.py"
+  [[ -f "$src/__manifest__.py" ]] || die "$(tildify "$src") has no __manifest__.py"
   rsync -a --delete --exclude '__pycache__/' --exclude '*.pyc' --exclude '.git/' \
     "$src/" "$dest/"
 }
@@ -141,7 +152,7 @@ sync_links() {
   IFS=',' read -ra list <<< "$mods"
   for m in "${list[@]}"; do
     if src="$(link_source "$v" "$m")"; then
-      info "resyncing $m from $src"
+      info "resyncing $m from $(tildify "$src")"
       rsync_module "$src" "$(link_dest "$v" "$m")"
     fi
   done
@@ -152,7 +163,7 @@ cmd_link() {
   [[ -n "${2:-}" ]] || die "link: missing module path"
   [[ -d "$2" ]] || die "link: '$2' is not a directory"
   local src; src="$(readlink -f "$2")"
-  [[ -f "$src/__manifest__.py" ]] || die "link: $src has no __manifest__.py"
+  [[ -f "$src/__manifest__.py" ]] || die "link: $(tildify "$src") has no __manifest__.py"
   local module; module="$(basename "$src")"
   local dest; dest="$(link_dest "$v" "$module")"
   local base; base="$(dirname "$dest")"
@@ -160,7 +171,7 @@ cmd_link() {
 
   local old
   if old="$(link_source "$v" "$module")"; then
-    [[ "$old" == "$src" ]] || info "$module was linked to $old, replaced by $src"
+    [[ "$old" == "$src" ]] || info "$module was linked to $(tildify "$old"), replaced by $(tildify "$src")"
     remove_line "$(links_file "$v")" "$module"$'\t'"$old"
   elif [[ -e "$dest" ]]; then
     die "link: addons/$v/$module already exists and is not a linked module (refusing to overwrite)"
@@ -171,7 +182,7 @@ cmd_link() {
   printf '%s\t%s\n' "$module" "$src" >> "$(links_file "$v")"
   local gi="$base/.gitignore"
   grep -qxF "/$module/" "$gi" 2>/dev/null || echo "/$module/" >> "$gi"
-  info "$module linked: $src -> addons/$v/$module"
+  info "$module linked: $(tildify "$src") -> addons/$v/$module"
   info "next step: odoomv install $v $module (or odoomv test $v $module)"
 }
 
@@ -184,7 +195,7 @@ cmd_unlink() {
   rm -rf -- "$dest"
   remove_line "$(links_file "$v")" "$module"$'\t'"$src"
   remove_line "$(dirname "$dest")/.gitignore" "/$module/"
-  info "$module unlinked (copy removed; the source $src is untouched)"
+  info "$module unlinked (copy removed; the source $(tildify "$src") is untouched)"
   info "the module stays installed in the databases where it was"
 }
 
@@ -270,19 +281,19 @@ cmd_install_update() {
   restart_if_running "$v"
 }
 
-# Called by the EXIT trap of cmd_test: receives its values as arguments, because the
-# local variables of cmd_test no longer exist when the trap fires.
+# Drops the scratch database and its filestore. Called explicitly at the end of cmd_test,
+# and by its EXIT trap if the test is interrupted: it receives its values as arguments,
+# because the local variables of cmd_test no longer exist when the trap fires.
 cleanup_test() {
-  local v="$1" db="$2" log="$3"
+  local v="$1" db="$2"
   if [[ ! "$db" =~ ^scratch${v}_[a-z0-9_]+$ ]]; then
     echo "odoomv: cleanup_test refuses to drop '$db' (not a scratch${v}_* database)" >&2
     return 1
   fi
   info "dropping $db"
   dc exec -T db dropdb -U odoo --if-exists --force "$db" || true
-  dc --profile "$v" run --rm -T --no-deps --entrypoint rm "odoo$v" \
+  dcq --profile "$v" run --rm -T --no-deps --entrypoint rm "odoo$v" \
     -rf "/var/lib/odoo/filestore/$db" || true
-  info "full log: $log"
 }
 
 cmd_test() {
@@ -290,7 +301,8 @@ cmd_test() {
   local module="${2:-}"
   [[ "$module" =~ ^[a-z0-9_]+$ ]] || die "test: invalid module name: '$module'"
   local db="scratch${v}_${module}"
-  local log; log="$(mktemp -t "odoomv-test-${db}.XXXXXX.log")"
+  mkdir -p logs
+  local log; log="logs/test-${v}-${module}-$(date +%Y%m%d-%H%M%S).log"
 
   sync_links "$v" "$module"
   ensure_db
@@ -298,7 +310,7 @@ cmd_test() {
   # Immediate expansion on purpose (SC2064): the locals will be gone on exit.
   # printf %q protects the values against spaces and quotes.
   # shellcheck disable=SC2064
-  trap "cleanup_test $(printf '%q ' "$v" "$db" "$log")" EXIT
+  trap "cleanup_test $(printf '%q ' "$v" "$db")" EXIT
 
   dc exec -T db dropdb -U odoo --if-exists --force "$db"
 
@@ -318,20 +330,20 @@ cmd_test() {
     fi
   done < "$log"
 
-  local verdict=ok
-  if (( total == 0 )); then
-    echo "FAIL: no test ran (no 'N tests' line with N > 0)" >&2; verdict=ko
-  fi
-  if (( failed > 0 || errors > 0 )); then
-    echo "FAIL: $failed failed, $errors error(s) of $total tests" >&2; verdict=ko
-  fi
-  if (( rc != 0 )); then
-    echo "FAIL: Odoo exited with code $rc" >&2; verdict=ko
-  fi
-  if [[ "$verdict" == ok ]]; then
-    echo "OK: $total tests, 0 failed, 0 error(s)" >&2
+  cleanup_test "$v" "$db"
+  trap - EXIT
+
+  # Verdict: always the last line, with the path of the full log.
+  local reasons=()
+  (( total == 0 )) && reasons+=("no test ran (no 'N tests' line with N > 0)")
+  (( failed > 0 || errors > 0 )) && reasons+=("$failed failed, $errors error(s) of $total tests")
+  (( rc != 0 )) && reasons+=("Odoo exited with code $rc")
+  if (( ${#reasons[@]} == 0 )); then
+    echo "OK: $total tests, 0 failed, 0 error(s) (log: $log)" >&2
     return 0
   fi
+  local joined; joined="$(printf '%s; ' "${reasons[@]}")"
+  echo "FAIL: ${joined%; } (log: $log)" >&2
   return 1
 }
 
@@ -340,7 +352,7 @@ cmd_shell() {
   local db="${2:-odoo${v}}"
   local t; t="$(tty_flag)"
   # shellcheck disable=SC2086
-  dc --profile "$v" run --rm $t "odoo$v" odoo shell -d "$db" --no-http
+  dcq --profile "$v" run --rm $t "odoo$v" odoo shell -d "$db" --no-http
 }
 
 cmd_psql() {
@@ -405,10 +417,10 @@ cmd_trace() {
   [[ $# -gt 0 ]] || die "trace: missing helper arguments (e.g. odoomv trace $v field sale.order commitment_date)"
   local root="$LAB_DIR/src/$v"
   [[ -f "$root/odoo/release.py" ]] \
-    || die "trace: $root/odoo is missing; run first: odoomv src $v"
+    || die "trace: $(tildify "$root")/odoo is missing; run first: odoomv src $v"
   local helper; helper="$(find_trace)"
   [[ -n "$helper" ]] \
-    || die "trace: odoo_trace.py not found in ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache (is the agent-skills plugin installed?)"
+    || die "trace: odoo_trace.py not found in $(tildify "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache") (is the agent-skills plugin installed?)"
   # Explicit --version: otherwise an odoo_version declared in a .claude/odoo.json would
   # contradict odoo/release.py of the other versions and the helper would stop with SETUP ERROR.
   exec python3 -I "$helper" --odoo-root "$root" \
