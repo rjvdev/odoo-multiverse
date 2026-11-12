@@ -1,0 +1,96 @@
+name: odoo-multiverse
+
+# One shared Postgres + one service per Odoo version (Docker profiles).
+# Drive it with ./odoomv (see CLAUDE.md), not directly.
+
+x-odoo-healthcheck: &odoo-healthcheck
+  test: ["CMD", "curl", "-fs", "http://localhost:8069/web/health"]
+  interval: 30s
+  timeout: 5s
+  retries: 3
+  start_period: 60s
+
+x-odoo: &odoo
+  depends_on:
+    db:
+      condition: service_healthy
+  environment:
+    HOST: db
+    USER: odoo
+    PASSWORD: odoo
+  healthcheck: *odoo-healthcheck
+  restart: unless-stopped
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: odoo
+      POSTGRES_PASSWORD: odoo
+      POSTGRES_DB: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U odoo -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  odoo16:
+    <<: *odoo
+    image: odoo:16.0
+    profiles: ["16"]
+    ports: ["127.0.0.1:8016:8069"]
+    volumes:
+      - ./addons/16:/mnt/extra-addons
+      - odoo16-data:/var/lib/odoo
+    command: ["--", "--db-filter=^(odoo16|scratch16_.*)$"]
+
+  odoo17:
+    <<: *odoo
+    image: odoo:17.0
+    profiles: ["17"]
+    ports: ["127.0.0.1:8017:8069"]
+    volumes:
+      - ./addons/17:/mnt/extra-addons
+      - odoo17-data:/var/lib/odoo
+    command: ["--", "--db-filter=^(odoo17|scratch17_.*)$"]
+
+  odoo18:
+    <<: *odoo
+    image: odoo:18.0
+    profiles: ["18"]
+    ports: ["127.0.0.1:8018:8069"]
+    volumes:
+      - ./addons/18:/mnt/extra-addons
+      - odoo18-data:/var/lib/odoo
+    command: ["--", "--db-filter=^(odoo18|scratch18_.*)$"]
+
+  odoo19:
+    <<: *odoo
+    image: odoo:19.0
+    profiles: ["19"]
+    ports: ["127.0.0.1:8019:8069"]
+    volumes:
+      - ./addons/19:/mnt/extra-addons
+      - odoo19-data:/var/lib/odoo
+    command: ["--", "--db-filter=^(odoo19|scratch19_.*)$"]
+
+  odoo20:
+    <<: *odoo
+    image: odoo:20.0
+    profiles: ["20"]
+    ports: ["127.0.0.1:8020:8069"]
+    volumes:
+      - ./addons/20:/mnt/extra-addons
+      - odoo20-data:/var/lib/odoo
+    command: ["--", "--db-filter=^(odoo20|scratch20_.*)$"]
+
+volumes:
+  pgdata:
+  odoo16-data:
+  odoo17-data:
+  odoo18-data:
+  odoo19-data:
+  odoo20-data:
